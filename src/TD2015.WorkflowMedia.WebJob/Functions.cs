@@ -7,28 +7,56 @@ using System.Threading.Tasks;
 using Microsoft.Azure.WebJobs;
 using Microsoft.WindowsAzure.Storage.Queue;
 using System.Configuration;
+using Microsoft.WindowsAzure.Storage.Blob;
 
 namespace TD2015.WorkflowMedia.WebJob
 {
     public class Functions
     {
-        private static string _mediaServiceName = ConfigurationManager.AppSettings["MediaServiceName"];
-        private static string _mediaServiceKey = ConfigurationManager.AppSettings["MediaServiceKey"];
-        private static string _azureStorageAccount = ConfigurationManager.ConnectionStrings["AzureWebJobsStorage"].ConnectionString;
+        private static string _mediaServiceName = 
+            ConfigurationManager.AppSettings["MediaServiceName"];
 
-        public static async Task ProcessNewBlobMessageAsync([QueueTrigger("upload")] CloudQueueMessage message, TextWriter log)
-        {
-            string blobUrl = message.AsString;
-            await log.WriteLineAsync(string.Format("New blob received: {0}", blobUrl));
+        private static string _mediaServiceKey = 
+            ConfigurationManager.AppSettings["MediaServiceKey"];
 
-            var mediaServiceWrapper = new MediaServiceWrapper(_mediaServiceName, _mediaServiceKey, _azureStorageAccount);
-            var asset = await mediaServiceWrapper.CreateMediaServiceAssetFromExistingBlobAsync(blobUrl);
-            var job = await mediaServiceWrapper.CreateMultibitrateGenerationJobAsync(asset, "job-progress");
+        private static string _azureStorageAccount = 
+            ConfigurationManager.ConnectionStrings["AzureWebJobsStorage"].ConnectionString;
 
-            await log.WriteLineAsync(string.Format("The job has been submitted (job id = {0})", job.Id));
-        }
+        /// <summary>
+        /// Methods triggered when a new blob is created in the "uploads" container
+        /// </summary>
+public static async Task ProcessNewBlobAsync(
+    [BlobTrigger("uploads/{name}")] ICloudBlob cloudBlob,
+    string name,
+    TextWriter logger)
+{
+    await logger.WriteLineAsync(string.Format("New blob received: {0}", name));
 
-        public static async Task ProcessMediaServicesJobStateChanged([QueueTrigger("job-progress")] CloudQueueMessage message, TextWriter log)
+    var mediaServiceWrapper = new MediaServiceWrapper(
+        _mediaServiceName,
+        _mediaServiceKey,
+        _azureStorageAccount);
+
+    // create the media service asset from the existing blob
+    var asset = await mediaServiceWrapper
+        .CreateMediaServiceAssetFromExistingBlobAsync(cloudBlob.Uri.ToString());
+
+    // create a job with two tasks : multibirate mp4 generation and thumbnails generation
+    var job = await mediaServiceWrapper
+        .CreateJobAsync(asset, notificationEndpointsQueueName: "job-progress");
+
+    await logger.WriteLineAsync(
+        string.Format("The job has been submitted (job id = {0})", 
+        job.Id));
+}
+
+        /// <summary>
+        /// Methods triggered when a new message is push by Azure Media Services
+        /// in the "job-progress" storage queue.
+        /// </summary>
+        public static async Task ProcessMediaServicesJobStateChanged(
+            [QueueTrigger("job-progress")] CloudQueueMessage message, 
+            TextWriter log)
         {
             var jobMessage = Newtonsoft.Json.JsonConvert.DeserializeObject<EncodingJobMessage>(message.AsString);
 
@@ -36,7 +64,8 @@ namespace TD2015.WorkflowMedia.WebJob
             if (jobMessage.EventType == "JobStateChange")
             {
                 //try get old and new state
-                if (jobMessage.Properties.Any(p => p.Key == "OldState") && jobMessage.Properties.Any(p => p.Key == "NewState"))
+                if (jobMessage.Properties.Any(p => p.Key == "OldState") 
+                    && jobMessage.Properties.Any(p => p.Key == "NewState"))
                 {
                     string oldJobState = jobMessage.Properties.First(p => p.Key == "OldState").Value.ToString();
                     string newJobState = jobMessage.Properties.First(p => p.Key == "NewState").Value.ToString();
@@ -54,7 +83,6 @@ namespace TD2015.WorkflowMedia.WebJob
                     }
                 }
             }
-
         }
     }
 }

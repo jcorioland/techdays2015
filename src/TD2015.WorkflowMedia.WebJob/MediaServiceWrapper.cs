@@ -41,13 +41,16 @@ namespace TD2015.WorkflowMedia.WebJob
 
             // get a valid reference on the source blob
             var sourceBlob = await cloudBlobClient.GetBlobReferenceFromServerAsync(new Uri(blobUrl));
-            if(sourceBlob.BlobType != Microsoft.WindowsAzure.Storage.Blob.BlobType.BlockBlob)
+            if (sourceBlob.BlobType != Microsoft.WindowsAzure.Storage.Blob.BlobType.BlockBlob)
             {
                 throw new ArgumentException("Azure Media Services only works with block blobs.");
             }
 
             // create a new media service asset
-            var asset = await _cloudMediaContext.Assets.CreateAsync(sourceBlob.Name, AssetCreationOptions.None, CancellationToken.None);
+            var asset = await _cloudMediaContext.Assets.CreateAsync(
+                sourceBlob.Name,
+                AssetCreationOptions.None,
+                CancellationToken.None);
 
             // create a write policy valid for one hour
             var writePolicy = await _cloudMediaContext.AccessPolicies.CreateAsync(
@@ -65,9 +68,9 @@ namespace TD2015.WorkflowMedia.WebJob
             // create the container if it does not exist
             if ((await destinationContainer.CreateIfNotExistsAsync()))
             {
-                destinationContainer.SetPermissions(new Microsoft.WindowsAzure.Storage.Blob.BlobContainerPermissions()
+                destinationContainer.SetPermissions(new BlobContainerPermissions()
                 {
-                    PublicAccess = Microsoft.WindowsAzure.Storage.Blob.BlobContainerPublicAccessType.Blob
+                    PublicAccess = BlobContainerPublicAccessType.Blob
                 });
             }
 
@@ -81,7 +84,7 @@ namespace TD2015.WorkflowMedia.WebJob
             // fetch the blob attributes
             await destinationBlob.FetchAttributesAsync();
 
-            if(destinationBlob.Properties.Length != sourceBlob.Properties.Length)
+            if (destinationBlob.Properties.Length != sourceBlob.Properties.Length)
             {
                 throw new InvalidOperationException("The blob was not well copied");
             }
@@ -95,7 +98,7 @@ namespace TD2015.WorkflowMedia.WebJob
             return asset;
         }
 
-        public async Task<IJob> CreateMultibitrateGenerationJobAsync(IAsset mediaServiceAsset, string notificationEndpointsQueueName)
+        public async Task<IJob> CreateJobAsync(IAsset mediaServiceAsset, string notificationEndpointsQueueName)
         {
             // create the job
             string jobName = string.Format("Multibitrate generation for {0}", mediaServiceAsset.Name);
@@ -104,10 +107,29 @@ namespace TD2015.WorkflowMedia.WebJob
             // get the azure media encoder
             var azureMediaEncoder = GetLatestMediaProcessorByName("Azure Media Encoder");
 
+            // add a task for multibitrate generation
+            var multibitrateTask = job.Tasks.AddNew(
+                "Multibitrate",
+                azureMediaEncoder,
+                "H264 Adaptive Bitrate MP4 Set 720p",
+                TaskOptions.None);
+
+            multibitrateTask.InputAssets.Add(mediaServiceAsset);
+            multibitrateTask.OutputAssets.AddNew(
+                string.Format("Multibirate ouput for {0}", mediaServiceAsset.Name),
+                AssetCreationOptions.None);
+
             // add a task for thumbnail generation
-            var thumbnailTask = job.Tasks.AddNew("Multibitrate", azureMediaEncoder, "H264 Adaptive Bitrate MP4 Set 720p", TaskOptions.None);
+            var thumbnailTask = job.Tasks.AddNew(
+                "Thumbnails",
+                azureMediaEncoder,
+                "Thumbnails",
+                TaskOptions.None);
+
             thumbnailTask.InputAssets.Add(mediaServiceAsset);
-            thumbnailTask.OutputAssets.AddNew(string.Format("Multibirate ouput for {0}", mediaServiceAsset.Name), AssetCreationOptions.None);
+            thumbnailTask.OutputAssets.AddNew(
+                string.Format("Thumbnails ouput for {0}", mediaServiceAsset.Name),
+                AssetCreationOptions.None);
 
             // create a notification endpoint
             await EnsureQueueExistsAsync(notificationEndpointsQueueName);
@@ -126,126 +148,126 @@ namespace TD2015.WorkflowMedia.WebJob
             return job;
         }
 
-        public async Task<AdaptiveStreamingInfo> PrepareAssetsForAdaptiveStreamingAsync(string jobId)
+public async Task<AdaptiveStreamingInfo> PrepareAssetsForAdaptiveStreamingAsync(string jobId)
+{
+    // get the job from the cloud media context
+    var theJob = _cloudMediaContext.Jobs
+        .Where(j => j.Id == jobId)
+        .AsEnumerable()
+        .FirstOrDefault();
+
+    if (theJob == null)
+    {
+        throw new InvalidOperationException("The job is not finished");
+    }
+
+    var adaptiveStreamingInfo = new AdaptiveStreamingInfo();
+
+    // assets publication
+    foreach (var outputAsset in theJob.OutputMediaAssets)
+    {
+        // multi-bitrate MP4
+        if (outputAsset.IsStreamable)
         {
-            // get the job from the cloud media context
-            var theJob = _cloudMediaContext.Jobs
-                .Where(j => j.Id == jobId)
-                .AsEnumerable()
-                .FirstOrDefault();
-
-            if (theJob == null)
-            {
-                throw new InvalidOperationException("The job is not finished");
-            }
-
-            var adaptiveStreamingInfo = new AdaptiveStreamingInfo();
-
-            // assets publication
-            foreach (var outputAsset in theJob.OutputMediaAssets)
-            {
-                // multi-bitrate MP4
-                if (outputAsset.IsStreamable)
-                {
-                    var streamingLocator = await GetStreamingLocatorForAssetAsync(outputAsset);
-                    adaptiveStreamingInfo.SmoothStreamingUrl = streamingLocator.GetSmoothStreamingUri().ToString();
-                    adaptiveStreamingInfo.HlsUrl = streamingLocator.GetHlsUri().ToString();
-                    adaptiveStreamingInfo.MpegDashUrl = streamingLocator.GetMpegDashUri().ToString();
-                }
-                // thumbnails
-                else
-                {
-                    var locator = await GetSasLocatorForAssetAsync(outputAsset);
-
-                    var posterFiles = outputAsset.AssetFiles
-                        .Where(f => f.Name.EndsWith(".jpg"))
-                        .AsEnumerable();
-
-                    foreach (var posterFile in posterFiles)
-                    {
-                        string posterUrl = string.Format("{0}/{1}{2}", locator.BaseUri, posterFile.Name, locator.ContentAccessComponent);
-                        adaptiveStreamingInfo.Posters.Add(posterUrl);
-                    }
-                }
-            }
-
-            return adaptiveStreamingInfo;
+            var streamingLocator = await GetStreamingLocatorForAssetAsync(outputAsset);
+            adaptiveStreamingInfo.SmoothStreamingUrl = streamingLocator.GetSmoothStreamingUri().ToString();
+            adaptiveStreamingInfo.HlsUrl = streamingLocator.GetHlsUri().ToString();
+            adaptiveStreamingInfo.MpegDashUrl = streamingLocator.GetMpegDashUri().ToString();
         }
+        // thumbnails
+        else
+        {
+            var locator = await GetSasLocatorForAssetAsync(outputAsset);
+
+            var posterFiles = outputAsset.AssetFiles
+                .Where(f => f.Name.EndsWith(".jpg"))
+                .AsEnumerable();
+
+            foreach (var posterFile in posterFiles)
+            {
+                string posterUrl = string.Format("{0}/{1}{2}", locator.BaseUri, posterFile.Name, locator.ContentAccessComponent);
+                adaptiveStreamingInfo.Posters.Add(posterUrl);
+            }
+        }
+    }
+
+    return adaptiveStreamingInfo;
+}
 
         /// <summary>
         /// Gets the streaming locator for an asset
         /// </summary>
         /// <param name="asset">The asset</param>
         /// <returns>The locator, wrapped in a Task, for asynchronous execution</returns>
-        private async Task<ILocator> GetStreamingLocatorForAssetAsync(IAsset asset)
-        {
-            // the asset should be streamable
-            if (!asset.IsStreamable)
-            {
-                throw new InvalidOperationException("This asset cannot be streamed.");
-            }
+private async Task<ILocator> GetStreamingLocatorForAssetAsync(IAsset asset)
+{
+    // the asset should be streamable
+    if (!asset.IsStreamable)
+    {
+        throw new InvalidOperationException("This asset cannot be streamed.");
+    }
 
-            // get the locator on the asset
-            var locator = asset.Locators
-                .Where(l => l.Name == "vwr_streaming_locator")
-                .FirstOrDefault();
+    // get the locator on the asset
+    var locator = asset.Locators
+        .Where(l => l.Name == "vwr_streaming_locator")
+        .FirstOrDefault();
 
-            // if it does not exist
-            if (locator == null)
-            {
-                // get the access policy
-                var accessPolicy = await _cloudMediaContext
-                        .AccessPolicies
-                        .CreateAsync("vwr_streaming_access_policy", TimeSpan.FromDays(100 * 365), AccessPermissions.Read);
+    // if it does not exist
+    if (locator == null)
+    {
+        // get the access policy
+        var accessPolicy = await _cloudMediaContext
+                .AccessPolicies
+                .CreateAsync("vwr_streaming_access_policy", TimeSpan.FromDays(100 * 365), AccessPermissions.Read);
 
-                // create the locator on the asset
-                locator = await _cloudMediaContext
-                    .Locators
-                    .CreateLocatorAsync(
-                        LocatorType.OnDemandOrigin,
-                        asset,
-                        accessPolicy,
-                        DateTime.UtcNow.AddMinutes(-5),
-                        name: "vwr_streaming_locator");
-            }
+        // create the locator on the asset
+        locator = await _cloudMediaContext
+            .Locators
+            .CreateLocatorAsync(
+                LocatorType.OnDemandOrigin,
+                asset,
+                accessPolicy,
+                DateTime.UtcNow.AddMinutes(-5),
+                name: "vwr_streaming_locator");
+    }
 
-            // returns the locator
-            return locator;
-        }
+    // returns the locator
+    return locator;
+}
 
         /// <summary>
         /// Gets a SAS locator for a given asset
         /// </summary>
         /// <param name="asset">The asset</param>
         /// <returns>The locator, wrapped in a Task for asynchronous execution</returns>
-        private async Task<ILocator> GetSasLocatorForAssetAsync(IAsset asset)
-        {
-            string locatorName = string.Format("SasLocator for {0}", asset.Id);
-            var locator = _cloudMediaContext.Locators
-                .Where(l => l.Name == locatorName)
-                .FirstOrDefault();
+private async Task<ILocator> GetSasLocatorForAssetAsync(IAsset asset)
+{
+    string locatorName = string.Format("SasLocator for {0}", asset.Id);
+    var locator = _cloudMediaContext.Locators
+        .Where(l => l.Name == locatorName)
+        .FirstOrDefault();
 
-            if (locator == null)
-            {
-                // create the access policy
-                var accessPolicy = await _cloudMediaContext
-                        .AccessPolicies
-                        .CreateAsync(string.Format("SasPolicy for {0}", asset.Id), TimeSpan.FromDays(100 * 365), AccessPermissions.Read);
+    if (locator == null)
+    {
+        // create the access policy
+        var accessPolicy = await _cloudMediaContext
+                .AccessPolicies
+                .CreateAsync(string.Format("SasPolicy for {0}", asset.Id), TimeSpan.FromDays(100 * 365), AccessPermissions.Read);
 
-                // create the locator on the asset
-                locator = await _cloudMediaContext
-                    .Locators
-                    .CreateLocatorAsync(
-                        LocatorType.Sas,
-                        asset,
-                        accessPolicy,
-                        DateTime.UtcNow.AddMinutes(-10),
-                        name: locatorName);
-            }
+        // create the locator on the asset
+        locator = await _cloudMediaContext
+            .Locators
+            .CreateLocatorAsync(
+                LocatorType.Sas,
+                asset,
+                accessPolicy,
+                DateTime.UtcNow.AddMinutes(-10),
+                name: locatorName);
+    }
 
-            // returns the locator
-            return locator;
-        }
+    // returns the locator
+    return locator;
+}
 
         private async Task EnsureQueueExistsAsync(string notificationEndpointsQueueName)
         {

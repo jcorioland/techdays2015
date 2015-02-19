@@ -1,4 +1,5 @@
 ﻿using Microsoft.WindowsAzure.Storage;
+using Microsoft.WindowsAzure.Storage.Blob;
 using System;
 using System.Configuration;
 using System.IO;
@@ -10,61 +11,33 @@ namespace TD15.WorkflowMedia.Uploader
     {
         static void Main(string[] args)
         {
-            Console.WriteLine("Chemin du fichier à envoyer:");
-            string filePath = Console.ReadLine();
+            Console.WriteLine("Enter the path of the file to upload:");
+            string path = Console.ReadLine();
 
-            Console.WriteLine("Envoi du fichier en cours...");
-
-            Uri blobUri = UploadFileAsync(filePath).Result;
-
-            Console.WriteLine("Le fichier a été envoyé dans Azure: {0}", blobUri);
-
-            PushToUploadQueueAsync(blobUri).Wait();
-
-            Console.WriteLine("OK !");
-        }
-
-        static async Task PushToUploadQueueAsync(Uri blobUri)
-        {
-            string azureStorageConnectionString =
-                ConfigurationManager.ConnectionStrings["AzureStorage"].ConnectionString;
-
-            // création d'un queue client
-            var cloudStorageAccount = CloudStorageAccount.Parse(azureStorageConnectionString);
-            var cloudQueueClient = cloudStorageAccount.CreateCloudQueueClient();
-
-            // récupération de la queue
-            var uploadQueue = cloudQueueClient.GetQueueReference("upload");
-            await uploadQueue.CreateIfNotExistsAsync();
-
-            // envoie d'un message qui contient l'url du blob
-            await uploadQueue.AddMessageAsync(new Microsoft.WindowsAzure.Storage.Queue.CloudQueueMessage(blobUri.ToString()));
-        }
-
-        static async Task<Uri> UploadFileAsync(string filePath)
-        {
-            string azureStorageConnectionString =
-                ConfigurationManager.ConnectionStrings["AzureStorage"].ConnectionString;
-
-            var cloudStorageAccount = CloudStorageAccount.Parse(azureStorageConnectionString);
-            var cloudBlobClient = cloudStorageAccount.CreateCloudBlobClient();
-
-            // récupération du conteneur d'upload
-            var container = cloudBlobClient.GetContainerReference("upload");
-            await container.CreateIfNotExistsAsync();
-
-            string fileName = Path.GetFileName(filePath);
-
-            // récupération d'une référence vers un block blob
-            var blockBlobReference = container.GetBlockBlobReference(fileName);
-
-            using(var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read))
+            if (!File.Exists(path))
             {
-                // upload du fichier
-                await blockBlobReference.UploadFromStreamAsync(fileStream);
+                Console.WriteLine("The file was not found");
+                return;
             }
 
-            return blockBlobReference.Uri;
+            string storageConnectionString = ConfigurationManager.ConnectionStrings["AzureStorage"].ConnectionString;
+            string uploadContainerName = "uploads";
+
+            // create a cloud storage account and a cloud blob client
+            CloudStorageAccount cloudStorageAccount = CloudStorageAccount.Parse(storageConnectionString);
+            CloudBlobClient cloudBlobClient = cloudStorageAccount.CreateCloudBlobClient();
+
+            // get the reference to the upload container and create it if it does not exist
+            CloudBlobContainer container = cloudBlobClient.GetContainerReference(uploadContainerName);
+            container.CreateIfNotExists();
+
+            // get a block blob reference
+            CloudBlockBlob blob = container.GetBlockBlobReference(Path.GetFileName(path));
+
+            // upload the file
+            blob.UploadFromFile(path, FileMode.Open);
+
+            Console.WriteLine("The file has been upload to the blob {0}", blob.Uri);
         }
     }
 }
